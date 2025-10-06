@@ -223,43 +223,90 @@ def summarize_pdf_with_openai(
 ) -> str:
     """
     Uses the Responses API with a file attachment.
-    Returns a consolidated-results summary in a fixed 5-bullet format,
-    with each bullet on its own line and a blank line between bullets.
+    Returns:
+      (A) EXACTLY 5 top-level bullets (1–5) with blank lines between bullets, and
+      (B) a markdown table of the consolidated income statement (line-by-line) with %YoY and %QoQ for each item.
+    Adds EBITDA and PAT margin %, and bps deltas YoY & QoQ with explicit QoQ/YoY definitions.
     """
+    import json  # stdlib only
+
     f = _upload_to_openai(pdf_bytes, fname=f"{_slug(company or 'doc')}.pdf")
 
-    task = f"""
-You are an equity analyst. Read the attached BSE financial results PDF for {company or 'NA'}.
+    # JSON prompt for higher determinism & clarity
+    task = {
+      "role": "equity_analyst",
+      "objective": f"Read the attached BSE financial results PDF for {company or 'NA'} and produce a 5-bullet summary plus a consolidated P&L table with YoY and QoQ deltas.",
+      "strict_scope": [
+        "Use CONSOLIDATED statements only (P&L and, if needed, Balance Sheet for context). Ignore standalone.",
+        "Normalize all monetary values to INR crore with 2 decimals. If a figure is unavailable, write 'Not disclosed'."
+      ],
+      "definitions_and_formulas": {
+        "periods": {
+          "quarter": "Assume the latest reported quarter unless explicitly stated otherwise."
+        },
+        "metrics": {
+          "Revenue": "As reported: 'Revenue from operations' (use 'Total income' only if 'Revenue from operations' is unavailable).",
+          "EBITDA": "Revenue − (Total expenses before Depreciation/Amortisation and Finance Costs).",
+          "PAT": "Profit after tax, as reported.",
+          "EBITDA_margin_pct": "EBITDA / Revenue × 100.",
+          "PAT_margin_pct": "PAT / Revenue × 100."
+        },
+        "change_calculations": {
+          "QoQ": "Change for the latest quarter vs the immediately preceding quarter (difference in 3 months). Use percentage change for values. For margins, bps_change_qoq = (current_margin_pct − prior_quarter_margin_pct) × 100.",
+          "YoY": "Change for the latest quarter vs the same quarter of the previous year (difference in 12 months). Use percentage change for values. For margins, bps_change_yoy = (current_margin_pct − prior_year_same_quarter_margin_pct) × 100."
+        },
+        "sign_conventions": "Use minus sign for negatives (e.g., -81.70 Cr, -153.2%). Round: values=2 decimals; percentages=1 decimal unless obvious; bps deltas as whole integers with 'bps'."
+      },
+      "output_contract": {
+        "format": "plain_text",
+        "sections": [
+          {
+            "name": "bullets_summary",
+            "rules": [
+              "Return EXACTLY FIVE top-level bullets, numbered 1–5.",
+              "Each bullet MUST start at the beginning of a new line.",
+              "Insert ONE blank line between bullets.",
+              "Do not place bullets 2 or 3 on the same line as any other bullet."
+            ],
+            "templates": [
+              "1- Consolidated revenue stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)",
+              "2- EBITDA stands at INR <EBITDA Cr> (<YoY% YoY>). EBITDA margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)",
+              "3- Key expense lines like Cost of Materials and Employee Benefits grew faster/slower than revenue. Provide two facts:\n   - Cost of Materials <rose/fell> <YoY%> YoY to INR <value Cr>\n   - Employee Benefits <rose/fell> <YoY%> YoY to INR <value Cr>",
+              "4- Finance Costs were a <key positive/drag>, <rising/declining> <YoY%> YoY to INR <value Cr>",
+              "5- Net Profit/Loss after tax stands at INR <PAT Cr> (<YoY% YoY> / <QoQ% QoQ>). PAT margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)"
+            ],
+            "wording_rules": [
+              "Use 'expanded' if the YoY bps change > 0, 'contracted' if < 0, else 'changed'.",
+              "If QoQ comparator is not available, write 'Not disclosed' for QoQ and omit the QoQ bps portion for margins."
+            ]
+          },
+          {
+            "name": "consolidated_pnl_table",
+            "title": "Consolidated Income Statement (Quarter)",
+            "render_as": "markdown_table",
+            "columns": ["Line item", "Current (INR Cr)", "%YoY", "%QoQ"],
+            "rows_inclusion_rules": [
+              "Include line items as reported by the company; map common synonyms.",
+              "Typical items (include if disclosed): Revenue from operations; Other income; Total income; Cost of materials consumed; Purchases of stock-in-trade; Changes in inventories of finished goods/work-in-progress/stock-in-trade; Employee benefits expense; Other expenses; EBITDA (computed); Finance costs; Depreciation and amortisation expense; Profit before tax (PBT); Tax expense; Profit/Loss after tax (PAT).",
+              "If 'Exceptional items' exist, include them as their own row."
+            ],
+            "calc_rules": [
+              "%YoY = ((Current − Same_qtr_last_year) / |Same_qtr_last_year|) × 100",
+              "%QoQ = ((Current − Previous_qtr) / |Previous_qtr|) × 100",
+              "For unavailable comparators, print 'Not disclosed'."
+            ]
+          }
+        ]
+      },
+      "guardrails": [
+        "Use CONSOLIDATED numbers only. If only standalone is available, state 'Not disclosed'.",
+        "Keep units consistent (INR Cr).",
+        "Do not invent figures; if a number cannot be found, write 'Not disclosed'.",
+        "If the period is not quarterly (e.g., HY/FY), produce YoY where possible and mark QoQ as 'Not disclosed'."
+      ]
+    }
 
-STRICT SCOPE
-- Use the CONSOLIDATED statements only (P&L and Balance Sheet). Ignore standalone.
-- Normalize to INR crore (2 decimals). If a figure is unavailable, write "Not disclosed".
-
-CALCULATIONS
-- EBITDA = Revenue − (Total expenses before Depreciation/Amortisation and Finance Costs).
-- EBITDA margin (%) = EBITDA / Revenue × 100.
-- YoY = vs same quarter last year (or same period for HY/FY).
-- QoQ = vs immediately preceding quarter (for quarterly results only).
-
-OUTPUT FORMAT — PLAIN TEXT ONLY
-- Return EXACTLY FIVE top-level bullets, numbered 1–5.
-- **Each bullet MUST start at the beginning of a new line, with ONE blank line between bullets.**
-- **Do not place bullets 2 or 3 on the same line as any other bullet.**
-
-Bullets to produce:
-
-1- Consolidated revenue stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)
-2- EBITDA stands at INR <EBITDA Cr> (<YoY% YoY>). EBITDA margin <expanded/contracted> to <Margin %> (<±bps> YoY)
-3- Key expense lines like Cost of Materials and Employee Benefits grew faster/slower than revenue. Provide two facts:
-   - Cost of Materials <rose/fell> <YoY%> YoY to INR <value Cr>
-   - Employee Benefits <rose/fell> <YoY%> YoY to INR <value Cr>
-4- Finance Costs were a <key positive/drag>, <rising/declining> <YoY%> YoY to INR <value Cr>
-5- Net Profit/Loss after tax stands at INR <value Cr> (<YoY% YoY> / <QoQ% QoQ>)
-
-Rules:
-- Use minus sign for negatives (e.g., -81.70 Cr, -153.2%).
-- If QoQ is not applicable, write "Not disclosed".
-"""
+    task_json = json.dumps(task, ensure_ascii=False, indent=2)
 
     resp = client.responses.create(
         model=model,
@@ -268,7 +315,7 @@ Rules:
         input=[{
             "role": "user",
             "content": [
-                {"type": "input_text", "text": task},
+                {"type": "input_text", "text": task_json},
                 {"type": "input_file", "file_id": f.id},
             ],
         }],
