@@ -235,20 +235,22 @@ def summarize_pdf_with_openai(
     # JSON prompt for higher determinism & clarity
     task = {
   "role": "equity_analyst",
-  "objective": f"Read the attached BSE financial results PDF for {company or 'NA'} and produce a 5-bullet summary plus dated consolidated tables (P&L, and if disclosed: Balance Sheet & Cash Flow).",
+  "objective": f"Read the attached BSE financial results PDF for {company or 'NA'} and produce a 5-bullet summary plus dated tables for P&L (and, if disclosed: Balance Sheet & Cash Flow). Prefer CONSOLIDATED; if unavailable, fall back to STANDALONE with clear labels.",
   "strict_scope": [
-    "Use CONSOLIDATED statements only (P&L and, if needed, Balance Sheet/Cash Flow for context). Ignore standalone.",
+    "Prefer CONSOLIDATED statements (P&L, Balance Sheet, Cash Flow).",
+    "If CONSOLIDATED is NOT available for a section, use the STANDALONE version for that section and clearly label it as 'Standalone'.",
+    "If CONSOLIDATED is unavailable across ALL three statements, report ALL figures from STANDALONE and label every section and bullet as 'Standalone'.",
     "Normalize all monetary values to INR crore with 2 decimals. If a figure is unavailable, write 'Not disclosed'."
   ],
   "definitions_and_formulas": {
     "periods": {
       "quarter": "Assume the latest reported quarter unless explicitly stated otherwise.",
       "labeling_rules": [
-        "Derive explicit period labels from the PDF (e.g., 'Quarter ended 30-Jun-2025' or 'Q1 FY26 (Apr–Jun 2025)').",
+        "Derive explicit period labels from the PDF (e.g., 'Quarter ended 30-Jun-2025' or 'Q1 FY26').",
         "Define placeholders you MUST replace in tables before printing: <Latest_qtr_label>, <Prev_qtr_label>, <YoY_qtr_label>.",
-        "Latest_qtr = the most recent reported quarter.",
-        "Prev_qtr = the immediately preceding quarter (QoQ comparator). If the FY rolls over (e.g., Q1), still use the prior quarter and clearly label its FY.",
-        "YoY_qtr = the same quarter in the prior fiscal year (YoY comparator)."
+        "Latest_qtr = most recent reported quarter.",
+        "Prev_qtr = immediately preceding quarter (QoQ comparator).",
+        "YoY_qtr = same quarter in the prior fiscal year (YoY comparator)."
       ]
     },
     "metrics": {
@@ -259,22 +261,15 @@ def summarize_pdf_with_openai(
       "PAT_margin_pct": "PAT / Revenue × 100."
     },
     "line_item_mapping": {
-      "Cost of Materials": [
-        "Cost of materials consumed",
-        "Raw materials consumed",
-        "Raw material consumption"
-      ],
-      "Employee Benefits": [
-        "Employee benefits expense",
-        "Staff costs",
-        "Personnel expenses"
-      ],
-      "Other expenses": [
-        "Other expenses",
-        "Operating and other expenses",
-        "Miscellaneous expenses"
-      ]
+      "Cost of Materials": ["Cost of materials consumed", "Raw materials consumed", "Raw material consumption"],
+      "Employee Benefits": ["Employee benefits expense", "Staff costs", "Personnel expenses"],
+      "Other expenses": ["Other expenses", "Operating and other expenses", "Miscellaneous expenses"]
     },
+    "basis_selection": [
+      "Set <scope_label> = 'Consolidated' when the relevant consolidated statement is found; else set <scope_label> = 'Standalone' for that section.",
+      "Use the same basis for current, QoQ, and YoY comparators within a section to ensure % changes are consistent.",
+      "If mixing bases across sections (e.g., P&L consolidated, Balance Sheet standalone), clearly label each section title with its basis."
+    ],
     "change_calculations": {
       "QoQ": "Change for the latest quarter vs the immediately preceding quarter (difference in 3 months). Use percentage change for values. For margins, bps_change_qoq = (current_margin_pct − prior_quarter_margin_pct) × 100.",
       "YoY": "Change for the latest quarter vs the same quarter of the previous year (difference in 12 months). Use percentage change for values. For margins, bps_change_yoy = (current_margin_pct − prior_year_same_quarter_margin_pct) × 100."
@@ -293,7 +288,7 @@ def summarize_pdf_with_openai(
           "Do not place bullets 2 or 3 on the same line as any other bullet."
         ],
         "templates": [
-          "1- Consolidated revenue stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)",
+          "1- <scope_label> revenue stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)",
 
           "2- EBITDA stands at INR <EBITDA Cr> (<YoY% YoY>). EBITDA margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)",
 
@@ -312,7 +307,7 @@ def summarize_pdf_with_openai(
 
       {
         "name": "consolidated_pnl_table",
-        "title": "Consolidated Income Statement (Quarter)",
+        "title": "<scope_label> Income Statement (Quarter)",
         "render_as": "markdown_table",
         "columns": [
           "Line item",
@@ -325,20 +320,21 @@ def summarize_pdf_with_openai(
         "rows_inclusion_rules": [
           "Include line items as reported by the company; map common synonyms.",
           "Typical items (include if disclosed): Revenue from operations; Other income; Total income; Cost of materials consumed; Purchases of stock-in-trade; Changes in inventories of finished goods/work-in-progress/stock-in-trade; Employee benefits expense; Other expenses; EBITDA (computed); Finance costs; Depreciation and amortisation expense; Exceptional items (if any); Profit before tax (PBT); Tax expense; Profit/Loss after tax (PAT).",
-          "For 'Cost of Materials' in the bullet summary, if the company does not provide a single figure but reports 'Cost of materials consumed' and 'Purchases of stock-in-trade' separately, use 'Cost of materials consumed' alone for the bullet; do NOT sum unless the company explicitly labels a combined figure."
+          "For 'Cost of Materials' in the bullet summary, if the company reports 'Cost of materials consumed' and 'Purchases of stock-in-trade' separately, use 'Cost of materials consumed' alone for the bullet; do NOT sum unless the company explicitly provides a combined figure."
         ],
         "calc_rules": [
           "%YoY = ((Current − Same_qtr_last_year) / |Same_qtr_last_year|) × 100",
           "%QoQ = ((Current − Previous_qtr) / |Previous_qtr|) × 100",
+          "Comparators must come from the same basis (<scope_label>) as the current period.",
           "For unavailable comparators or dates, print 'Not disclosed'."
         ]
       },
 
       {
         "name": "consolidated_balance_sheet_table",
-        "title": "Consolidated Balance Sheet (Statement of Assets & Liabilities)",
+        "title": "<scope_label> Balance Sheet (Statement of Assets & Liabilities)",
         "render_as": "markdown_table",
-        "disclosure_rule": "If the Balance Sheet is not disclosed in the PDF, output a single line: 'Consolidated Balance Sheet: Not disclosed.'",
+        "disclosure_rule": "If NEITHER consolidated nor standalone Balance Sheet is disclosed, output a single line: 'Balance Sheet: Not disclosed.'",
         "columns": [
           "Line item",
           "<As_of_latest_label> (INR Cr)",
@@ -357,9 +353,9 @@ def summarize_pdf_with_openai(
 
       {
         "name": "consolidated_cashflow_table",
-        "title": "Consolidated Cash Flow Statement",
+        "title": "<scope_label> Cash Flow Statement",
         "render_as": "markdown_table",
-        "disclosure_rule": "If the Cash Flow Statement is not disclosed in the PDF, output a single line: 'Consolidated Cash Flow Statement: Not disclosed.'",
+        "disclosure_rule": "If NEITHER consolidated nor standalone Cash Flow is disclosed, output a single line: 'Cash Flow Statement: Not disclosed.'",
         "columns": [
           "Line item",
           "<Latest_period_label> (INR Cr)",
@@ -369,7 +365,8 @@ def summarize_pdf_with_openai(
         "labeling_notes": [
           "Respect the reporting basis: if the company provides quarter-only cash flows, use the quarter labels.",
           "If it provides YTD/H1/H9M basis, use those period labels aligned to the same cut-off dates as <Latest_qtr_label>, <Prev_qtr_label>, and <YoY_qtr_label>.",
-          "If any comparator period is not provided, print 'Not disclosed'."
+          "If any comparator period is not provided, print 'Not disclosed'.",
+          "Comparators must come from the same basis (<scope_label>) as the current period."
         ],
         "rows_inclusion_rules": [
           "Typical items (include if disclosed): Net cash from operating activities (CFO); Net cash used in investing activities (CFI); Net cash from/(used in) financing activities (CFF); Net increase/(decrease) in cash and cash equivalents; Cash and cash equivalents at end of period."
@@ -378,13 +375,14 @@ def summarize_pdf_with_openai(
     ]
   },
   "guardrails": [
-    "Use CONSOLIDATED numbers only. If only standalone is available, state 'Not disclosed'.",
+    "Prefer CONSOLIDATED. If a section is missing in consolidated but available in standalone, use STANDALONE for that section and set <scope_label> accordingly.",
+    "If CONSOLIDATED is entirely unavailable across P&L, Balance Sheet, and Cash Flow, report ALL data using STANDALONE and set <scope_label> = 'Standalone' globally.",
     "Keep units consistent (INR Cr).",
     "Do not invent figures; if a number cannot be found, write 'Not disclosed'.",
-    "If the period is not quarterly (e.g., HY/FY), produce YoY where possible and mark QoQ as 'Not disclosed'.",
-    "Before rendering tables, replace <Latest_qtr_label>, <Prev_qtr_label>, <YoY_qtr_label> (and related 'as of'/'period' labels) with explicit dates/quarter names parsed from the PDF."
+    "Before rendering tables and bullets, replace <scope_label>, <Latest_qtr_label>, <Prev_qtr_label>, <YoY_qtr_label> (and related 'as of'/'period' labels) with explicit basis and dates parsed from the PDF."
   ]
 }
+
 
 
     task_json = json.dumps(task, ensure_ascii=False, indent=2)
