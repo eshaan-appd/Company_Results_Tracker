@@ -234,77 +234,158 @@ def summarize_pdf_with_openai(
 
     # JSON prompt for higher determinism & clarity
     task = {
-      "role": "equity_analyst",
-      "objective": f"Read the attached BSE financial results PDF for {company or 'NA'} and produce a 5-bullet summary plus a consolidated P&L table with YoY and QoQ deltas.",
-      "strict_scope": [
-        "Use CONSOLIDATED statements only (P&L and, if needed, Balance Sheet for context). Ignore standalone.",
-        "Normalize all monetary values to INR crore with 2 decimals. If a figure is unavailable, write 'Not disclosed'."
+  "role": "equity_analyst",
+  "objective": f"Read the attached BSE financial results PDF for {company or 'NA'} and produce a 5-bullet summary plus dated consolidated tables (P&L, and if disclosed: Balance Sheet & Cash Flow).",
+  "strict_scope": [
+    "Use CONSOLIDATED statements only (P&L and, if needed, Balance Sheet/Cash Flow for context). Ignore standalone.",
+    "Normalize all monetary values to INR crore with 2 decimals. If a figure is unavailable, write 'Not disclosed'."
+  ],
+  "definitions_and_formulas": {
+    "periods": {
+      "quarter": "Assume the latest reported quarter unless explicitly stated otherwise.",
+      "labeling_rules": [
+        "Derive explicit period labels from the PDF (e.g., 'Quarter ended 30-Jun-2025' or 'Q1 FY26 (Apr–Jun 2025)').",
+        "Define placeholders you MUST replace in tables before printing: <Latest_qtr_label>, <Prev_qtr_label>, <YoY_qtr_label>.",
+        "Latest_qtr = the most recent reported quarter.",
+        "Prev_qtr = the immediately preceding quarter (QoQ comparator). If the FY rolls over (e.g., Q1), still use the prior quarter and clearly label its FY.",
+        "YoY_qtr = the same quarter in the prior fiscal year (YoY comparator)."
+      ]
+    },
+    "metrics": {
+      "Revenue": "As reported: 'Revenue from operations' (use 'Total income' only if 'Revenue from operations' is unavailable).",
+      "EBITDA": "Revenue − (Total expenses before Depreciation/Amortisation and Finance Costs).",
+      "PAT": "Profit after tax, as reported.",
+      "EBITDA_margin_pct": "EBITDA / Revenue × 100.",
+      "PAT_margin_pct": "PAT / Revenue × 100."
+    },
+    "line_item_mapping": {
+      "Cost of Materials": [
+        "Cost of materials consumed",
+        "Raw materials consumed",
+        "Raw material consumption"
       ],
-      "definitions_and_formulas": {
-        "periods": {
-          "quarter": "Assume the latest reported quarter unless explicitly stated otherwise."
-        },
-        "metrics": {
-          "Revenue": "As reported: 'Revenue from operations' (use 'Total income' only if 'Revenue from operations' is unavailable).",
-          "EBITDA": "Revenue − (Total expenses before Depreciation/Amortisation and Finance Costs).",
-          "PAT": "Profit after tax, as reported.",
-          "EBITDA_margin_pct": "EBITDA / Revenue × 100.",
-          "PAT_margin_pct": "PAT / Revenue × 100."
-        },
-        "change_calculations": {
-          "QoQ": "Change for the latest quarter vs the immediately preceding quarter (difference in 3 months). Use percentage change for values. For margins, bps_change_qoq = (current_margin_pct − prior_quarter_margin_pct) × 100.",
-          "YoY": "Change for the latest quarter vs the same quarter of the previous year (difference in 12 months). Use percentage change for values. For margins, bps_change_yoy = (current_margin_pct − prior_year_same_quarter_margin_pct) × 100."
-        },
-        "sign_conventions": "Use minus sign for negatives (e.g., -81.70 Cr, -153.2%). Round: values=2 decimals; percentages=1 decimal unless obvious; bps deltas as whole integers with 'bps'."
-      },
-      "output_contract": {
-        "format": "plain_text",
-        "sections": [
-          {
-            "name": "bullets_summary",
-            "rules": [
-              "Return EXACTLY FIVE top-level bullets, numbered 1–5.",
-              "Each bullet MUST start at the beginning of a new line.",
-              "Insert ONE blank line between bullets.",
-              "Do not place bullets 2 or 3 on the same line as any other bullet."
-            ],
-            "templates": [
-              "1- Consolidated revenue stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)",
-              "2- EBITDA stands at INR <EBITDA Cr> (<YoY% YoY>). EBITDA margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)",
-              "3- Key expense lines like Cost of Materials and Employee Benefits grew faster/slower than revenue. Provide two facts:\n   - Cost of Materials <rose/fell> <YoY%> YoY to INR <value Cr>\n   - Employee Benefits <rose/fell> <YoY%> YoY to INR <value Cr>",
-              "4- Finance Costs were a <key positive/drag>, <rising/declining> <YoY%> YoY to INR <value Cr>",
-              "5- Net Profit/Loss after tax stands at INR <PAT Cr> (<YoY% YoY> / <QoQ% QoQ>). PAT margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)"
-            ],
-            "wording_rules": [
-              "Use 'expanded' if the YoY bps change > 0, 'contracted' if < 0, else 'changed'.",
-              "If QoQ comparator is not available, write 'Not disclosed' for QoQ and omit the QoQ bps portion for margins."
-            ]
-          },
-          {
-            "name": "consolidated_pnl_table",
-            "title": "Consolidated Income Statement (Quarter)",
-            "render_as": "markdown_table",
-            "columns": ["Line item", "Current (INR Cr)", "%YoY", "%QoQ"],
-            "rows_inclusion_rules": [
-              "Include line items as reported by the company; map common synonyms.",
-              "Typical items (include if disclosed): Revenue from operations; Other income; Total income; Cost of materials consumed; Purchases of stock-in-trade; Changes in inventories of finished goods/work-in-progress/stock-in-trade; Employee benefits expense; Other expenses; EBITDA (computed); Finance costs; Depreciation and amortisation expense; Profit before tax (PBT); Tax expense; Profit/Loss after tax (PAT).",
-              "If 'Exceptional items' exist, include them as their own row."
-            ],
-            "calc_rules": [
-              "%YoY = ((Current − Same_qtr_last_year) / |Same_qtr_last_year|) × 100",
-              "%QoQ = ((Current − Previous_qtr) / |Previous_qtr|) × 100",
-              "For unavailable comparators, print 'Not disclosed'."
-            ]
-          }
+      "Employee Benefits": [
+        "Employee benefits expense",
+        "Staff costs",
+        "Personnel expenses"
+      ],
+      "Other expenses": [
+        "Other expenses",
+        "Operating and other expenses",
+        "Miscellaneous expenses"
+      ]
+    },
+    "change_calculations": {
+      "QoQ": "Change for the latest quarter vs the immediately preceding quarter (difference in 3 months). Use percentage change for values. For margins, bps_change_qoq = (current_margin_pct − prior_quarter_margin_pct) × 100.",
+      "YoY": "Change for the latest quarter vs the same quarter of the previous year (difference in 12 months). Use percentage change for values. For margins, bps_change_yoy = (current_margin_pct − prior_year_same_quarter_margin_pct) × 100."
+    },
+    "sign_conventions": "Use minus sign for negatives (e.g., -81.70 Cr, -153.2%). Round: values=2 decimals; percentages=1 decimal unless obvious; bps deltas as whole integers with 'bps'."
+  },
+  "output_contract": {
+    "format": "plain_text",
+    "sections": [
+      {
+        "name": "bullets_summary",
+        "rules": [
+          "Return EXACTLY FIVE top-level bullets, numbered 1–5.",
+          "Each bullet MUST start at the beginning of a new line.",
+          "Insert ONE blank line between bullets.",
+          "Do not place bullets 2 or 3 on the same line as any other bullet."
+        ],
+        "templates": [
+          "1- Consolidated revenue stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)",
+
+          "2- EBITDA stands at INR <EBITDA Cr> (<YoY% YoY>). EBITDA margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)",
+
+          "3- Operating expenses snapshot:\\n   - Cost of Materials stands at INR <value Cr> (<YoY% YoY> / <QoQ% QoQ>)\\n   - Employee Benefits stands at INR <value Cr> (<YoY% YoY> / <QoQ% QoQ>)\\n   - Other expenses stands at INR <value Cr> (<YoY% YoY> / <QoQ% QoQ>)",
+
+          "4- Finance Costs were a <key positive/drag>, <rising/declining> <YoY%> YoY to INR <value Cr>",
+
+          "5- Net Profit/Loss after tax stands at INR <PAT Cr> (<YoY% YoY> / <QoQ% QoQ>). PAT margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)"
+        ],
+        "wording_rules": [
+          "Use 'expanded' if the YoY bps change > 0, 'contracted' if < 0, else 'changed'.",
+          "If a comparator is not available, write 'Not disclosed' for that comparator and omit the corresponding bps portion for margins.",
+          "If any of the three expense line items are not disclosed, write 'Not disclosed' for its value and/or comparator(s)."
         ]
       },
-      "guardrails": [
-        "Use CONSOLIDATED numbers only. If only standalone is available, state 'Not disclosed'.",
-        "Keep units consistent (INR Cr).",
-        "Do not invent figures; if a number cannot be found, write 'Not disclosed'.",
-        "If the period is not quarterly (e.g., HY/FY), produce YoY where possible and mark QoQ as 'Not disclosed'."
-      ]
-    }
+
+      {
+        "name": "consolidated_pnl_table",
+        "title": "Consolidated Income Statement (Quarter)",
+        "render_as": "markdown_table",
+        "columns": [
+          "Line item",
+          "<Latest_qtr_label> (INR Cr)",
+          "<Prev_qtr_label> (INR Cr)",
+          "<YoY_qtr_label> (INR Cr)",
+          "%YoY",
+          "%QoQ"
+        ],
+        "rows_inclusion_rules": [
+          "Include line items as reported by the company; map common synonyms.",
+          "Typical items (include if disclosed): Revenue from operations; Other income; Total income; Cost of materials consumed; Purchases of stock-in-trade; Changes in inventories of finished goods/work-in-progress/stock-in-trade; Employee benefits expense; Other expenses; EBITDA (computed); Finance costs; Depreciation and amortisation expense; Exceptional items (if any); Profit before tax (PBT); Tax expense; Profit/Loss after tax (PAT).",
+          "For 'Cost of Materials' in the bullet summary, if the company does not provide a single figure but reports 'Cost of materials consumed' and 'Purchases of stock-in-trade' separately, use 'Cost of materials consumed' alone for the bullet; do NOT sum unless the company explicitly labels a combined figure."
+        ],
+        "calc_rules": [
+          "%YoY = ((Current − Same_qtr_last_year) / |Same_qtr_last_year|) × 100",
+          "%QoQ = ((Current − Previous_qtr) / |Previous_qtr|) × 100",
+          "For unavailable comparators or dates, print 'Not disclosed'."
+        ]
+      },
+
+      {
+        "name": "consolidated_balance_sheet_table",
+        "title": "Consolidated Balance Sheet (Statement of Assets & Liabilities)",
+        "render_as": "markdown_table",
+        "disclosure_rule": "If the Balance Sheet is not disclosed in the PDF, output a single line: 'Consolidated Balance Sheet: Not disclosed.'",
+        "columns": [
+          "Line item",
+          "<As_of_latest_label> (INR Cr)",
+          "<As_of_prev_qtr_label> (INR Cr)",
+          "<As_of_yoy_qtr_label> (INR Cr)"
+        ],
+        "labeling_rules": [
+          "As_of_latest_label = the 'as at' date corresponding to <Latest_qtr_label>.",
+          "As_of_prev_qtr_label = the 'as at' date corresponding to <Prev_qtr_label>.",
+          "As_of_yoy_qtr_label = the 'as at' date corresponding to <YoY_qtr_label>."
+        ],
+        "rows_inclusion_rules": [
+          "Typical items (include if disclosed): Equity share capital; Other equity; Total equity; Borrowings (non-current); Borrowings (current); Lease liabilities; Deferred tax liabilities (net); Trade payables (current); Other financial liabilities; Provisions; Property, plant and equipment; Capital work-in-progress; Right-of-use assets; Goodwill/Intangibles; Inventories; Trade receivables; Cash and cash equivalents; Bank balances; Other current assets; Total assets; Total liabilities; Net debt (if reported)."
+        ]
+      },
+
+      {
+        "name": "consolidated_cashflow_table",
+        "title": "Consolidated Cash Flow Statement",
+        "render_as": "markdown_table",
+        "disclosure_rule": "If the Cash Flow Statement is not disclosed in the PDF, output a single line: 'Consolidated Cash Flow Statement: Not disclosed.'",
+        "columns": [
+          "Line item",
+          "<Latest_period_label> (INR Cr)",
+          "<Prev_qtr_period_label> (INR Cr)",
+          "<YoY_period_label> (INR Cr)"
+        ],
+        "labeling_notes": [
+          "Respect the reporting basis: if the company provides quarter-only cash flows, use the quarter labels.",
+          "If it provides YTD/H1/H9M basis, use those period labels aligned to the same cut-off dates as <Latest_qtr_label>, <Prev_qtr_label>, and <YoY_qtr_label>.",
+          "If any comparator period is not provided, print 'Not disclosed'."
+        ],
+        "rows_inclusion_rules": [
+          "Typical items (include if disclosed): Net cash from operating activities (CFO); Net cash used in investing activities (CFI); Net cash from/(used in) financing activities (CFF); Net increase/(decrease) in cash and cash equivalents; Cash and cash equivalents at end of period."
+        ]
+      }
+    ]
+  },
+  "guardrails": [
+    "Use CONSOLIDATED numbers only. If only standalone is available, state 'Not disclosed'.",
+    "Keep units consistent (INR Cr).",
+    "Do not invent figures; if a number cannot be found, write 'Not disclosed'.",
+    "If the period is not quarterly (e.g., HY/FY), produce YoY where possible and mark QoQ as 'Not disclosed'.",
+    "Before rendering tables, replace <Latest_qtr_label>, <Prev_qtr_label>, <YoY_qtr_label> (and related 'as of'/'period' labels) with explicit dates/quarter names parsed from the PDF."
+  ]
+}
+
 
     task_json = json.dumps(task, ensure_ascii=False, indent=2)
 
