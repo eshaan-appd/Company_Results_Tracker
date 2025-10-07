@@ -255,6 +255,7 @@ def summarize_pdf_with_openai(
     },
     "metrics": {
       "Revenue": "As reported: 'Revenue from operations' (use 'Total income' only if 'Revenue from operations' is unavailable).",
+      "Other_income": "As reported: 'Other income' (non-operating).",
       "EBITDA": "Revenue − (Total expenses before Depreciation/Amortisation and Finance Costs).",
       "PAT": "Profit after tax, as reported.",
       "EBITDA_margin_pct": "EBITDA / Revenue × 100.",
@@ -274,34 +275,42 @@ def summarize_pdf_with_openai(
       "QoQ": "Change for the latest quarter vs the immediately preceding quarter (difference in 3 months). Use percentage change for values. For margins, bps_change_qoq = (current_margin_pct − prior_quarter_margin_pct) × 100.",
       "YoY": "Change for the latest quarter vs the same quarter of the previous year (difference in 12 months). Use percentage change for values. For margins, bps_change_yoy = (current_margin_pct − prior_year_same_quarter_margin_pct) × 100."
     },
-    "sign_conventions": "Use minus sign for negatives (e.g., -81.70 Cr, -153.2%). Round: values=2 decimals; percentages=1 decimal unless obvious; bps deltas as whole integers with 'bps'."
+    "sign_conventions": "Use minus sign for negatives (e.g., -81.70 Cr, -153.2%). Round: values=2 decimals; percentages=1 decimal unless obvious; bps deltas as whole integers with 'bps'.",
+    "data_validation": [
+      "All numeric values and period labels MUST be extracted from the attached PDF. Do not infer or hallucinate.",
+      "Cross-check: Total income = Revenue from operations + Other income (when all three are disclosed). If mismatch > 0.5 Cr due to rounding/classification, prefer the reported 'Total income' and annotate row-level values as printed.",
+      "Ensure that YoY and QoQ comparators correspond to the same basis (<scope_label>) and identical line-item definitions.",
+      "If a comparator period is missing or ambiguous, write 'Not disclosed' for % changes for that line."
+    ]
   },
   "output_contract": {
     "format": "plain_text",
     "sections": [
       {
-        "name": "bullets_summary",
+        "name": "Result_summary",
         "rules": [
           "Return EXACTLY FIVE top-level bullets, numbered 1–5.",
+          "Bullet #1 MUST be Revenue from operations.",
+          "Bullet #2 MUST be Other income.",
           "Each bullet MUST start at the beginning of a new line.",
           "Insert ONE blank line between bullets.",
           "Do not place bullets 2 or 3 on the same line as any other bullet."
         ],
         "templates": [
-          "1- <scope_label> revenue stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)",
+          "1- <scope_label> revenue from operations stands at INR <Revenue Cr> (<YoY% YoY> / <QoQ% QoQ>)",
 
-          "2- EBITDA stands at INR <EBITDA Cr> (<YoY% YoY>). EBITDA margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)",
+          "2- Other income stands at INR <Other income Cr> (<YoY% YoY> / <QoQ% QoQ>)",
 
-          "3- Operating expenses snapshot:\\n   - Cost of Materials stands at INR <value Cr> (<YoY% YoY> / <QoQ% QoQ>)\\n   - Employee Benefits stands at INR <value Cr> (<YoY% YoY> / <QoQ% QoQ>)\\n   - Other expenses stands at INR <value Cr> (<YoY% YoY> / <QoQ% QoQ>)",
+          "3- EBITDA stands at INR <EBITDA Cr> (<YoY% YoY> / <QoQ% QoQ>). EBITDA margin stands at <Margin %> (<±bps YoY> / <±bps QoQ>)",
 
-          "4- Finance Costs were a <key positive/drag>, <rising/declining> <YoY%> YoY to INR <value Cr>",
+          "4- Finance Costs stands at INR <Finance costs Cr> (<YoY% YoY> / <QoQ% QoQ>)",
 
-          "5- Net Profit/Loss after tax stands at INR <PAT Cr> (<YoY% YoY> / <QoQ% QoQ>). PAT margin <expanded/contracted/changed> to <Margin %> (<±bps YoY> / <±bps QoQ>)"
+          "5- Net Profit after tax stands at INR <PAT Cr> (<YoY% YoY> / <QoQ% QoQ>). PAT margin stands at <Margin %> (<±bps YoY> / <±bps QoQ>)"
         ],
         "wording_rules": [
-          "Use 'expanded' if the YoY bps change > 0, 'contracted' if < 0, else 'changed'.",
+          "For margins, compute bps deltas using the margin percentages.",
           "If a comparator is not available, write 'Not disclosed' for that comparator and omit the corresponding bps portion for margins.",
-          "If any of the three expense line items are not disclosed, write 'Not disclosed' for its value and/or comparator(s)."
+          "Always ensure the numbers in bullets exactly match the tables (same basis, same periods)."
         ]
       },
 
@@ -319,8 +328,9 @@ def summarize_pdf_with_openai(
         ],
         "rows_inclusion_rules": [
           "Include line items as reported by the company; map common synonyms.",
-          "Typical items (include if disclosed): Revenue from operations; Other income; Total income; Cost of materials consumed; Purchases of stock-in-trade; Changes in inventories of finished goods/work-in-progress/stock-in-trade; Employee benefits expense; Other expenses; EBITDA (computed); Finance costs; Depreciation and amortisation expense; Exceptional items (if any); Profit before tax (PBT); Tax expense; Profit/Loss after tax (PAT).",
-          "For 'Cost of Materials' in the bullet summary, if the company reports 'Cost of materials consumed' and 'Purchases of stock-in-trade' separately, use 'Cost of materials consumed' alone for the bullet; do NOT sum unless the company explicitly provides a combined figure."
+          "You MUST include these rows (if disclosed): Revenue from operations; Other income; Total income.",
+          "Typical items (include if disclosed): Cost of materials consumed; Purchases of stock-in-trade; Changes in inventories of FG/WIP/stock-in-trade; Employee benefits expense; Other expenses; EBITDA (computed); Finance costs; Depreciation and amortisation expense; Exceptional items (if any); Profit before tax (PBT); Tax expense; Profit/Loss after tax (PAT).",
+          "If the company reports 'Cost of materials consumed' and 'Purchases of stock-in-trade' separately, do NOT sum them unless a combined figure is explicitly provided."
         ],
         "calc_rules": [
           "%YoY = ((Current − Same_qtr_last_year) / |Same_qtr_last_year|) × 100",
@@ -379,7 +389,8 @@ def summarize_pdf_with_openai(
     "If CONSOLIDATED is entirely unavailable across P&L, Balance Sheet, and Cash Flow, report ALL data using STANDALONE and set <scope_label> = 'Standalone' globally.",
     "Keep units consistent (INR Cr).",
     "Do not invent figures; if a number cannot be found, write 'Not disclosed'.",
-    "Before rendering tables and bullets, replace <scope_label>, <Latest_qtr_label>, <Prev_qtr_label>, <YoY_qtr_label> (and related 'as of'/'period' labels) with explicit basis and dates parsed from the PDF."
+    "Before rendering tables and bullets, replace <scope_label>, <Latest_qtr_label>, <Prev_qtr_label>, <YoY_qtr_label> (and related 'as of'/'period' labels) with explicit basis and dates parsed from the PDF.",
+    "All outputs must be internally consistent with the attached PDF; if any conflict is detected, prefer the figure exactly as printed and flag the inconsistency in a brief footnote under the affected table."
   ]
 }
 
